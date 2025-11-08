@@ -1,0 +1,318 @@
+# FINAL SCRIPT — DUAL-CLIENT BOT WITH ENRICHED MENU (Year / Quality / Language)
+# - Bot renders inline menus in the group
+# - User account talks to TARGET_BOT (bots cannot DM bots)
+# - Enriched button labels while preserving existing behavior
+# - Ignores forwarded/media/bot messages to avoid accidental triggers
+
+import os
+import asyncio
+import logging
+import re
+from telethon import TelegramClient, events, Button
+from telethon.errors import TimeoutError
+
+API_ID = os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID")) # Convert to integer
+TARGET_BOT_USERNAME = "ProSearchM5Bot"
+MAX_PAGES_TO_SEARCH = 20
+
+if not all([API_ID, API_HASH, BOT_TOKEN, GROUP_CHAT_ID]):
+    raise ValueError("Missing one or more required environment variables (API_ID, API_HASH, BOT_TOKEN, GROUP_CHAT_ID)")
+
+logging.basicConfig(
+    format='[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s',
+    level=logging.INFO
+)
+
+# Two clients:
+user_client = TelegramClient('user_session', API_ID, API_HASH)              # your personal account (OTP on first run)
+bot_client  = TelegramClient('bot_session',  API_ID, API_HASH).start(bot_token=BOT_TOKEN)  # the UI bot
+
+# ---------- Utilities ----------
+LANG_WORDS = [
+    "hindi", "english", "telugu", "tamil", "malayalam", "kannada",
+    "bengali", "marathi", "punjabi", "gujarati", "odia", "oriya",
+    "dual", "multi", "multiaudio", "hin+eng", "hin-eng", "tam+tel",
+    "dubbed", "hindidub", "hindub"
+]
+
+def extract_year(text: str):
+    m = re.search(r'(?<!\d)(19\d{2}|20\d{2})(?!\d)', text)
+    return m.group(1) if m else None
+
+def extract_lang(text: str):
+    t = text.lower()
+    langs = []
+    for w in LANG_WORDS:
+        if w in t:
+            if w in ("dual", "multi", "multiaudio"): langs.append("Multi")
+            elif w in ("odia", "oriya"): langs.append("Odia")
+            elif w in ("hindidub", "hindub"): langs.append("Hindi Dub")
+            else: langs.append(w.capitalize())
+    seen, out = set(), []
+    for l in langs:
+        if l not in seen:
+            seen.add(l); out.append(l)
+    return ", ".join(out) if out else None
+
+def get_quality_label(text: str):
+    t = text.lower()
+    if any(q in t for q in ("2160p", "4k")): return "2160p"
+    if "1080p" in t: return "1080p"
+    if "720p"  in t: return "720p"
+    if "480p"  in t: return "480p"
+    if "hdrip" in t: return "HDRip"
+    return None
+
+def quality_rank(q: str) -> int:
+    return {"2160p":4, "1080p":3, "720p":2, "480p":1, "HDRip":0}.get(q or "", -1)
+
+def normalize_title(text: str) -> str:
+    t = text.lower()
+    t = re.sub(r'^\[.*?\]\s*', '', t)
+    match = re.search(r'^(.*?)(?:\s\(?\d{4}\)?|\s\d{3,4}p|\s(?:hindi|telugu|tamil|malayalam|kannada|english|bengali|marathi|punjabi|gujarati|odia|oriya))', t)
+    if match:
+        title = match.group(1).strip()
+        title = re.sub(r'\s-\s(part|the)\s\d', '', title, flags=re.IGNORECASE)
+        title = re.sub(r':\s(the|part)\s\w+', '', title, flags=re.IGNORECASE)
+        cleaned = title.strip().title() if title else t.strip().title()
+        return cleaned
+    return t.strip().title()
+
+def build_button_label(title: str, year: str, quality: str, lang: str) -> str:
+    parts = [title]
+    if year: parts.append(year)
+    if quality: parts.append(quality)
+    if lang: parts.append(lang)
+    label = " - ".join(parts)
+    MAX_LEN = 60
+    if len(label) > MAX_LEN:
+        label = label[:MAX_LEN-1].rstrip() + "…"
+    return label
+
+def sanitize_button_text_keep_basic_punct(text: str) -> str:
+    s = re.sub(r'[^A-Za-z0-9 \-\(\),\+\&\.\:]', '', text).strip()
+    return s if s else "Untitled"
+
+# ---------- Discovery (build menu) ----------
+async def discovery_agent(chat_id: int, message_id: int, search_query: str):
+    status = await bot_client.send_message(chat_id, f"Discovering movies for “{search_query}”...", reply_to=message_id)
+    try:
+        distinct = {}  # title -> {page,index,qrank,qlabel,year,lang}
+        search_words = search_query.lower().split()
+
+        async with user_client.conversation(TARGET_BOT_USERNAME, timeout=180) as conv:
+            await conv.send_message(search_query)
+            current = await conv.get_response()
+
+            if getattr(current, "buttons", None) and any(k in (current.text or "").lower() for k in ("join", "subscribe")):
+                try:
+                    await current.click(0)
+                    await asyncio.sleep(2)
+                    current = await conv.get_response()
+                except Exception:
+                    pass
+
+            if not (hasattr(current, "buttons") and current.buttons):
+                await status.edit(f"Sorry, no results for “{search_query}”.")
+                return
+
+            page_num = 1
+            while page_num <= MAX_PAGES_TO_SEARCH:
+                page_buttons = [b for row in (current.buttons or []) for b in row]
+                for i, btn in enumerate(page_buttons):
+                    btn_text = (btn.text or "").strip()
+                    if not btn_text:
+                        continue
+                    if not all(w in btn_text.lower() for w in search_words):
+                        continue
+
+                    normalized = normalize_title(btn_text)
+                    if not normalized:
+                        continue
+
+                    year = extract_year(btn_text)
+                    qlabel = get_quality_label(btn_text)
+                    qrank = quality_rank(qlabel)
+                    lang = extract_lang(btn_text)
+
+                    prior = distinct.get(normalized)
+                    if (prior is None) or (qrank > prior['qrank']):
+                        distinct[normalized] = {
+                            'page': page_num,
+                            'index': i,
+                            'qrank': qrank,
+                            'qlabel': qlabel,
+                            'year': year,
+                            'lang': lang
+                        }
+
+                next_btn = next((b for b in page_buttons if (b.text or "").lower().strip().startswith("next")), None)
+                if next_btn and page_num < MAX_PAGES_TO_SEARCH:
+                    try:
+                        await next_btn.click()
+                        current = await conv.wait_event(events.MessageEdited(from_users=TARGET_BOT_USERNAME), timeout=15)
+                        page_num += 1
+                    except TimeoutError:
+                        break
+                    except Exception:
+                        break
+                else:
+                    break
+
+        if not distinct:
+            await status.edit(f"Searched {page_num} pages, but couldn’t find relevant movies for “{search_query}”.")
+            return
+
+        # Build enriched buttons (bot sends them)
+        buttons = []
+        for title, data in distinct.items():
+            label = build_button_label(title, data['year'], data['qlabel'], data['lang'])
+            safe_label = sanitize_button_text_keep_basic_punct(label)
+            # Keep callback carrying page & index and a plain title (for display)
+            cb = f"get:{data['page']}:{data['index']}:{sanitize_button_text_keep_basic_punct(title)}"
+            buttons.append([Button.inline(safe_label, data=cb.encode('utf-8'))])
+
+        await status.delete()
+        await bot_client.send_message(
+            chat_id,
+            "I found the following distinct movies. Please choose one:",
+            buttons=buttons,
+            reply_to=message_id
+        )
+        logging.info("Menu sent with %d options", len(buttons))
+
+    except Exception as e:
+        logging.exception("Discovery error: %s", e)
+        try:
+            await status.edit("An error occurred during discovery.")
+        except Exception:
+            pass
+
+# ---------- Execution (on selection) ----------
+async def execution_agent(event: events.CallbackQuery.Event):
+    try:
+        data = (event.data or b"").decode('utf-8', errors='ignore')  # "get:<page>:<index>:<title>"
+        if not data.startswith("get:"):
+            await event.answer()
+            return
+        _, page_str, index_str, *title_parts = data.split(':', 3)
+        target_page = int(page_str)
+        target_index = int(index_str)
+        chosen_title = title_parts[0] if title_parts else "your selection"
+    except Exception:
+        await event.answer("Invalid selection.", alert=True)
+        return
+
+    reply_message = await event.get_message()
+    original_request = await reply_message.get_reply_message()
+    if not original_request or not original_request.text:
+        await event.answer("Original request not found.", alert=True)
+        return
+
+    try:
+        await event.edit(f"Fetching “{chosen_title}”...")
+    except Exception:
+        await event.answer(f"Fetching “{chosen_title}”...")
+
+    try:
+        async with user_client.conversation(TARGET_BOT_USERNAME, timeout=180) as conv:
+            await conv.send_message(original_request.text)
+            current = await conv.get_response()
+
+            if getattr(current, "buttons", None) and any(k in (current.text or "").lower() for k in ("join", "subscribe")):
+                try:
+                    await current.click(0)
+                    await asyncio.sleep(2)
+                    current = await conv.get_response()
+                except Exception:
+                    pass
+
+            for _ in range(1, target_page):
+                page_buttons = [b for row in (current.buttons or []) for b in row]
+                next_btn = next((b for b in page_buttons if (b.text or "").lower().strip().startswith("next")), None)
+                if not next_btn:
+                    raise Exception("Next button disappeared before reaching target page.")
+                await next_btn.click()
+                current = await conv.wait_event(events.MessageEdited(from_users=TARGET_BOT_USERNAME), timeout=15)
+
+            await current.click(target_index)
+
+            final_file_message = None
+            for _ in range(8):
+                resp = await conv.get_response()
+                if getattr(resp, "media", None):
+                    final_file_message = resp
+                    break
+
+            if not final_file_message:
+                raise TimeoutError("The source bot did not send a file after selection.")
+
+            await user_client.forward_messages(GROUP_CHAT_ID, final_file_message)
+
+            try:
+                await event.delete()
+            except Exception:
+                pass
+
+    except Exception as e:
+        logging.exception("Execution error: %s", e)
+        try:
+            await event.edit("An error occurred during retrieval.")
+        except Exception:
+            pass
+
+# ---------- BOT LISTENERS ----------
+@bot_client.on(events.NewMessage(chats=GROUP_CHAT_ID, incoming=True))
+async def group_listener(event: events.NewMessage.Event):
+    text = (event.raw_text or "").strip()
+    if not text:
+        return
+
+    # Ignore forwards/media/bot-sent messages to prevent accidental triggers
+    if event.message and (event.message.fwd_from or event.message.media or event.message.via_bot_id):
+        return
+    sender = await event.get_sender()
+    if getattr(sender, 'bot', False):
+        return
+
+    if text.startswith('/'):
+        return
+    if event.is_reply:
+        return
+    lower = text.lower()
+    bot_status_prefixes = (
+        "i found the following", "sorry, no results", "an error occurred",
+        "fetching", "discovering movies for"
+    )
+    if any(lower.startswith(p) for p in bot_status_prefixes):
+        return
+
+    asyncio.create_task(discovery_agent(event.chat_id, event.id, text))
+
+@bot_client.on(events.CallbackQuery(chats=GROUP_CHAT_ID))
+async def group_callback(event: events.CallbackQuery.Event):
+    data = (event.data or b"").decode(errors='ignore')
+    if data.startswith("get:"):
+        asyncio.create_task(execution_agent(event))
+    else:
+        await event.answer()
+
+# ---------- MAIN ----------
+async def main():
+    await user_client.start()  # OTP on first run
+    me_user = await user_client.get_me()
+    me_bot  = await bot_client.get_me()
+    logging.info("✅ User client: %s (%s)", me_user.first_name, me_user.id)
+    logging.info("✅ Bot client : %s (@%s)", me_bot.first_name, me_bot.username)
+    logging.info("👂 Group ID   : %s", GROUP_CHAT_ID)
+    await asyncio.gather(
+        bot_client.run_until_disconnected(),
+        user_client.run_until_disconnected()
+    )
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
