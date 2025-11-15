@@ -195,11 +195,7 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
         except Exception:
             pass
 
-def progress_callback(current, total):
-    percent = round(current * 100 / total, 1)
-    # This will print the progress in your Railway logs
-    logging.info("Uploaded %s%%", percent)
-
+# --- THE FINAL, SIMPLE, AND CORRECT VERSION ---
 async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
     try:
         # For a nice user message, find the text of the button that was clicked
@@ -216,19 +212,20 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
         
         await event.edit(f"Fetching “{chosen_title}”...")
 
+        # Get the original search query from the message the user replied to
         original_request = await reply_message.get_reply_message()
         if not original_request or not original_request.text:
             await event.edit("Error: Original request not found.")
             return
 
+        # Parse the page and index from the button data
         data = (event.data or b"").decode('utf-8', errors='ignore')
         _, page_str, index_str = data.split(':', 2)
         target_page = int(page_str)
         target_index = int(index_str)
 
-        # --- PART 1: The User Client (Worker) Gets the File ---
-        final_file_message = None
-        async with user_client.conversation(TARGET_BOT_USERNAME, timeout=300) as conv: # Increased timeout
+        # The User Client (Worker) gets the file and forwards it
+        async with user_client.conversation(TARGET_BOT_USERNAME, timeout=180) as conv:
             await conv.send_message(original_request.text)
             current = await conv.get_response()
 
@@ -245,6 +242,7 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
 
             await current.click(target_index)
 
+            final_file_message = None
             for _ in range(8):
                 resp = await conv.get_response()
                 if getattr(resp, "media", None):
@@ -254,44 +252,13 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
         if not final_file_message:
             raise TimeoutError("The source bot did not send a file.")
 
-        # --- PART 2: The Bot Client Delivers the File ---
-        await event.edit(f"Downloading...")
-
-        # Download the file from the source bot into an in-memory buffer
-        file_buffer = io.BytesIO()
-        await user_client.download_media(final_file_message, file=file_buffer)
-        file_buffer.seek(0)
-        logging.info("Download complete. Starting upload to user %d", user_id)
-        await event.edit(f"Uploading “{chosen_title}”...")
-
-        # Get the original filename and attributes
-        original_filename = "video.mp4"
-        file_attributes = []
-        if final_file_message.document:
-            file_attributes = final_file_message.document.attributes
-            for attr in file_attributes:
-                if isinstance(attr, types.DocumentAttributeFilename):
-                    original_filename = attr.file_name
-                    break
+        # --- THIS IS THE FIX ---
+        # Your user_client forwards the file directly to the user who requested it.
+        await user_client.forward_messages(user_id, final_file_message)
         
-        # Prepare the final list of attributes for the new file
-        final_attributes = [types.DocumentAttributeFilename(original_filename)]
-        for attr in file_attributes:
-            if not isinstance(attr, types.DocumentAttributeFilename):
-                final_attributes.append(attr)
-
-        # The Bot Client sends the file to the user with a progress monitor
-        await bot_client.send_file(
-            user_id,
-            file=file_buffer,
-            caption=final_file_message.text,
-            attributes=final_attributes,
-            force_document=True,
-            upload_progress_callback=progress_callback
-        )
-        
+        # Clean up the status message
         await event.delete()
-        logging.info("Successfully sent file to user %d", user_id)
+        logging.info("Successfully forwarded file to user %d", user_id)
 
     except Exception as e:
         logging.exception("Execution error: %s", e)
@@ -364,6 +331,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
