@@ -281,8 +281,14 @@ async def execution_agent(event: events.CallbackQuery.Event):
             pass
 
 # ---------- BOT LISTENERS ----------
-@bot_client.on(events.NewMessage(private=True, incoming=True))
+@bot_client.on(events.NewMessage(incoming=True)) # Listen to all incoming messages
 async def private_message_listener(event: events.NewMessage.Event):
+    
+    # --- THIS IS THE FIX ---
+    # Only proceed if the message is a private chat (not a group or channel)
+    if not event.is_private:
+        return
+
     text = (event.raw_text or "").strip()
     if not text:
         return
@@ -306,13 +312,20 @@ async def private_message_listener(event: events.NewMessage.Event):
     if any(lower.startswith(p) for p in bot_status_prefixes):
         return
 
+    # If all checks pass, start the discovery process
     asyncio.create_task(discovery_agent(event.chat_id, event.id, text))
 
-@bot_client.on(events.CallbackQuery(private=True))
+@bot_client.on(events.CallbackQuery()) # Listen to all callbacks
 async def private_callback_listener(event: events.CallbackQuery.Event):
+    
+    # Only proceed if the callback is from a private chat
+    if not event.is_private:
+        await event.answer() # Silently ignore
+        return
+
     data = (event.data or b"").decode(errors='ignore')
     if data.startswith("get:"):
-        user_id = event.sender_id 
+        user_id = event.sender_id
         asyncio.create_task(execution_agent(event, user_id))
     else:
         await event.answer()
@@ -333,5 +346,6 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
