@@ -11,6 +11,7 @@ import logging
 import re
 from telethon import TelegramClient, events, Button
 from telethon.errors import TimeoutError
+from telethon.tl import types
 
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
@@ -267,15 +268,18 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
                 original_filename = attr.file_name
                 break
 
+        final_attributes = [types.DocumentAttributeFilename(original_filename)]
+        for attr in file_attributes:
+            if not hasattr(attr, 'file_name'):
+                final_attributes.append(attr)
+        
         # The Bot Client sends the file to the user
         await bot_client.send_file(
             user_id,
             file=file_buffer,
             caption=final_file_message.text, # Keep the original caption
-            attributes=[attr for attr in file_attributes if not hasattr(attr, 'file_name')], # Keep other attributes
-            force_document=True,
-            # We add the filename attribute back manually
-            attributes=[types.DocumentAttributeFilename(original_filename)] + [attr for attr in file_attributes if not hasattr(attr, 'file_name')]
+            attributes=final_attributes,     # Pass the combined list here
+            force_document=True
         )
         
         # Clean up the status message
@@ -353,6 +357,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
