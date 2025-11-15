@@ -14,6 +14,7 @@ from telethon.errors import TimeoutError
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+STORAGE_CHANNEL_ID = int(os.environ.get("STORAGE_CHANNEL_ID"))
 TARGET_BOT_USERNAME = "ProSearchM5Bot"
 MAX_PAGES_TO_SEARCH = 20
 
@@ -193,36 +194,30 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
         except Exception:
             pass
 
-# --- THE FINAL, SIMPLE, AND CORRECT VERSION ---
+# --- THE FINAL, CORRECT, AND RELIABLE VERSION ---
 async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
     try:
-        # For a nice user message, find the text of the button that was clicked
         chosen_title = "your selection"
         reply_message = await event.get_message()
         if reply_message and reply_message.buttons:
             for row in reply_message.buttons:
                 for button in row:
                     if button.data == event.data:
-                        chosen_title = button.text
-                        break
-                if chosen_title != "your selection":
-                    break
+                        chosen_title = button.text; break
+            if chosen_title != "your selection": break
         
-        await event.edit(f"Fetching “{chosen_title}”...")
+        await event.edit(f"Finalizing “{chosen_title}”...")
 
-        # Get the original search query from the message the user replied to
         original_request = await reply_message.get_reply_message()
         if not original_request or not original_request.text:
-            await event.edit("Error: Original request not found.")
-            return
+            await event.edit("Error: Original request not found."); return
 
-        # Parse the page and index from the button data
         data = (event.data or b"").decode('utf-8', errors='ignore')
         _, page_str, index_str = data.split(':', 2)
         target_page = int(page_str)
         target_index = int(index_str)
 
-        # The User Client (Worker) gets the file and forwards it
+        # --- PART 1: The User Client gets the file ---
         async with user_client.conversation(TARGET_BOT_USERNAME, timeout=180) as conv:
             await conv.send_message(original_request.text)
             current = await conv.get_response()
@@ -244,24 +239,25 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
             for _ in range(8):
                 resp = await conv.get_response()
                 if getattr(resp, "media", None):
-                    final_file_message = resp
-                    break
+                    final_file_message = resp; break
         
         if not final_file_message:
             raise TimeoutError("The source bot did not send a file.")
 
-        # --- THIS IS THE FIX ---
-        # Your user_client forwards the file directly to the user who requested it.
-        await user_client.forward_messages(user_id, final_file_message)
+        # --- PART 2: Relay the file through the storage channel ---
+        # 1. The user_client forwards the file to your private channel. This is instant.
+        fwd_message = await user_client.forward_messages(STORAGE_CHANNEL_ID, final_file_message)
+
+        # 2. The bot_client forwards that new message to the user. This is also instant.
+        await bot_client.forward_messages(user_id, fwd_message)
         
-        # Clean up the status message
         await event.delete()
-        logging.info("Successfully forwarded file to user %d", user_id)
+        logging.info("Successfully relayed file to user %d", user_id)
 
     except Exception as e:
         logging.exception("Execution error: %s", e)
         try:
-            await event.edit("An error occurred during retrieval. Please try again.")
+            await event.edit("An error occurred. Please try again.")
         except Exception:
             pass            
 # ---------- BOT LISTENERS ----------
@@ -329,6 +325,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
