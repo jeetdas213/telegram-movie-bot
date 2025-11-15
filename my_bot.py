@@ -14,7 +14,6 @@ from telethon.errors import TimeoutError
 API_ID = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID")) # Convert to integer
 TARGET_BOT_USERNAME = "ProSearchM5Bot"
 MAX_PAGES_TO_SEARCH = 20
 
@@ -267,7 +266,7 @@ async def execution_agent(event: events.CallbackQuery.Event):
             if not final_file_message:
                 raise TimeoutError("The source bot did not send a file after selection.")
 
-            await user_client.forward_messages(GROUP_CHAT_ID, final_file_message)
+            await user_client.forward_messages(user_id, final_file_message)
 
             try:
                 await event.delete()
@@ -282,8 +281,8 @@ async def execution_agent(event: events.CallbackQuery.Event):
             pass
 
 # ---------- BOT LISTENERS ----------
-@bot_client.on(events.NewMessage(chats=GROUP_CHAT_ID, incoming=True))
-async def group_listener(event: events.NewMessage.Event):
+@bot_client.on(events.NewMessage(private=True, incoming=True))
+async def private_message_listener(event: events.NewMessage.Event):
     text = (event.raw_text or "").strip()
     if not text:
         return
@@ -309,11 +308,12 @@ async def group_listener(event: events.NewMessage.Event):
 
     asyncio.create_task(discovery_agent(event.chat_id, event.id, text))
 
-@bot_client.on(events.CallbackQuery(chats=GROUP_CHAT_ID))
-async def group_callback(event: events.CallbackQuery.Event):
+@bot_client.on(events.CallbackQuery(private=True))
+async def private_callback_listener(event: events.CallbackQuery.Event):
     data = (event.data or b"").decode(errors='ignore')
     if data.startswith("get:"):
-        asyncio.create_task(execution_agent(event))
+        user_id = event.sender_id 
+        asyncio.create_task(execution_agent(event, user_id))
     else:
         await event.answer()
 
@@ -333,3 +333,4 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
