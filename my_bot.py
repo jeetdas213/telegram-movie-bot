@@ -337,7 +337,6 @@ async def main():
     me_bot  = await bot_client.get_me()
     logging.info("✅ User client: %s (%s)", me_user.first_name, me_user.id)
     logging.info("✅ Bot client : %s (@%s)", me_bot.first_name, me_bot.username)
-    logging.info("👂 Group ID   : %s", GROUP_CHAT_ID)
     await asyncio.gather(
         bot_client.run_until_disconnected(),
         user_client.run_until_disconnected()
@@ -346,6 +345,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
