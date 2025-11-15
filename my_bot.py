@@ -4,8 +4,6 @@
 # - Enriched button labels while preserving existing behavior
 # - Ignores forwarded/media/bot messages to avoid accidental triggers
 
-import io
-from telethon.tl import types
 import os
 import asyncio
 import logging
@@ -331,6 +329,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
