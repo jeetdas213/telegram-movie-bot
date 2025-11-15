@@ -203,8 +203,11 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
             for row in reply_message.buttons:
                 for button in row:
                     if button.data == event.data:
-                        chosen_title = button.text; break
-            if chosen_title != "your selection": break
+                        chosen_title = button.text
+                        found_button = True
+                        break  # Exit the inner loop
+                if found_button:
+                    break  # Exit the outer loop
         
         await event.edit(f"Finalizing “{chosen_title}”...")
 
@@ -325,6 +328,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
