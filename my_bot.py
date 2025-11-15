@@ -17,8 +17,8 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 TARGET_BOT_USERNAME = "ProSearchM5Bot"
 MAX_PAGES_TO_SEARCH = 20
 
-if not all([API_ID, API_HASH, BOT_TOKEN, GROUP_CHAT_ID]):
-    raise ValueError("Missing one or more required environment variables (API_ID, API_HASH, BOT_TOKEN, GROUP_CHAT_ID)")
+if not all([API_ID, API_HASH, BOT_TOKEN]):
+    raise ValueError("Missing one or more required environment variables (API_ID, API_HASH, BOT_TOKEN)")
 
 logging.basicConfig(
     format='[%(levelname) 5s/%(asctime)s] %(name)s: %(message)s',
@@ -333,4 +333,5 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
