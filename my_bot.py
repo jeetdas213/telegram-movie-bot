@@ -194,7 +194,7 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
             pass
 
 # ---------- Execution (on selection) ----------
-async def execution_agent(event: events.CallbackQuery.Event):
+async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
     try:
         data = (event.data or b"").decode('utf-8', errors='ignore')  # "get:<page>:<index>"
         if not data.startswith("get:"):
@@ -345,6 +345,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
