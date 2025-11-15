@@ -198,16 +198,16 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
 async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
     try:
         chosen_title = "your selection"
-        reply_message = await event.get_message()
-        if reply_message and reply_message.buttons:
-            for row in reply_message.buttons:
-                for button in row:
-                    if button.data == event.data:
-                        chosen_title = button.text
-                        found_button = True
-                        break  # Exit the inner loop
-                if found_button:
-                    break  # Exit the outer loop
+        try:
+            reply_message = await event.get_message()
+            if reply_message and reply_message.buttons:
+                # Flatten the list of buttons and find the one that was clicked
+                all_buttons = [b for row in reply_message.buttons for b in row]
+                clicked_button = next((btn for btn in all_buttons if btn.data == event.data), None)
+                if clicked_button:
+                    chosen_title = clicked_button.text
+        except Exception:
+            pass # If we can't find the title, just use the default "your selection"
         
         await event.edit(f"Finalizing “{chosen_title}”...")
 
@@ -328,6 +328,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
