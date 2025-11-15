@@ -4,6 +4,7 @@
 # - Enriched button labels while preserving existing behavior
 # - Ignores forwarded/media/bot messages to avoid accidental triggers
 
+import io
 import os
 import asyncio
 import logging
@@ -196,16 +197,6 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
 # ---------- Execution (on selection) ----------
 async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
     try:
-        data = (event.data or b"").decode('utf-8', errors='ignore')  # "get:<page>:<index>"
-        if not data.startswith("get:"):
-            await event.answer()
-            return
-            
-        # --- FIX: Parse the new, shorter callback data format ---
-        _, page_str, index_str = data.split(':', 2)
-        target_page = int(page_str)
-        target_index = int(index_str)
-
         # For a nice user message, find the text of the button that was clicked
         chosen_title = "your selection"
         reply_message = await event.get_message()
@@ -217,69 +208,86 @@ async def execution_agent(event: events.CallbackQuery.Event, user_id: int):
                         break
                 if chosen_title != "your selection":
                     break
-
-    except Exception:
-        await event.answer("Invalid selection.", alert=True)
-        return
-
-    reply_message = await event.get_message()
-    original_request = await reply_message.get_reply_message()
-    if not original_request or not original_request.text:
-        await event.answer("Original request not found.", alert=True)
-        return
-
-    try:
+        
         await event.edit(f"Fetching “{chosen_title}”...")
-    except Exception:
-        await event.answer(f"Fetching “{chosen_title}”...")
 
-    try:
+        # Get the original search query from the message the user replied to
+        original_request = await reply_message.get_reply_message()
+        if not original_request or not original_request.text:
+            await event.edit("Error: Original request not found.")
+            return
+
+        # Parse the page and index from the button data
+        data = (event.data or b"").decode('utf-8', errors='ignore')
+        _, page_str, index_str = data.split(':', 2)
+        target_page = int(page_str)
+        target_index = int(index_str)
+
+        # --- PART 1: The User Client (Worker) Gets the File ---
+        final_file_message = None
         async with user_client.conversation(TARGET_BOT_USERNAME, timeout=180) as conv:
             await conv.send_message(original_request.text)
             current = await conv.get_response()
 
             if getattr(current, "buttons", None) and any(k in (current.text or "").lower() for k in ("join", "subscribe")):
-                try:
-                    await current.click(0)
-                    await asyncio.sleep(2)
-                    current = await conv.get_response()
-                except Exception:
-                    pass
+                await current.click(0); await asyncio.sleep(2)
+                current = await conv.get_response()
 
             for _ in range(1, target_page):
                 page_buttons = [b for row in (current.buttons or []) for b in row]
                 next_btn = next((b for b in page_buttons if (b.text or "").lower().strip().startswith("next")), None)
-                if not next_btn:
-                    raise Exception("Next button disappeared before reaching target page.")
+                if not next_btn: raise Exception("Next button disappeared.")
                 await next_btn.click()
                 current = await conv.wait_event(events.MessageEdited(from_users=TARGET_BOT_USERNAME), timeout=15)
 
             await current.click(target_index)
 
-            final_file_message = None
             for _ in range(8):
                 resp = await conv.get_response()
                 if getattr(resp, "media", None):
                     final_file_message = resp
                     break
+        
+        if not final_file_message:
+            raise TimeoutError("The source bot did not send a file.")
 
-            if not final_file_message:
-                raise TimeoutError("The source bot did not send a file after selection.")
+        # --- PART 2: The Bot Client Delivers the File ---
+        await event.edit(f"Uploading “{chosen_title}”...")
 
-            await user_client.forward_messages(user_id, final_file_message)
+        # Download the file from the source bot into an in-memory buffer
+        file_buffer = io.BytesIO()
+        await user_client.download_media(final_file_message, file=file_buffer)
+        file_buffer.seek(0) # Rewind the buffer to the beginning
 
-            try:
-                await event.delete()
-            except Exception:
-                pass
+        # Get the original filename and other attributes to make it look perfect
+        file_attributes = final_file_message.document.attributes
+        original_filename = "video.mp4" # A default filename
+        for attr in file_attributes:
+            if hasattr(attr, 'file_name'):
+                original_filename = attr.file_name
+                break
+
+        # The Bot Client sends the file to the user
+        await bot_client.send_file(
+            user_id,
+            file=file_buffer,
+            caption=final_file_message.text, # Keep the original caption
+            attributes=[attr for attr in file_attributes if not hasattr(attr, 'file_name')], # Keep other attributes
+            force_document=True,
+            # We add the filename attribute back manually
+            attributes=[types.DocumentAttributeFilename(original_filename)] + [attr for attr in file_attributes if not hasattr(attr, 'file_name')]
+        )
+        
+        # Clean up the status message
+        await event.delete()
+        logging.info("Successfully sent file to user %d", user_id)
 
     except Exception as e:
         logging.exception("Execution error: %s", e)
         try:
-            await event.edit("An error occurred during retrieval.")
+            await event.edit("An error occurred during retrieval. Please try again.")
         except Exception:
             pass
-
 # ---------- BOT LISTENERS ----------
 @bot_client.on(events.NewMessage(incoming=True)) # Listen to all incoming messages
 async def private_message_listener(event: events.NewMessage.Event):
@@ -345,6 +353,7 @@ async def main():
 if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     loop.run_until_complete(main())
+
 
 
 
