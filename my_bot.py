@@ -171,9 +171,12 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
         for title, data in distinct.items():
             label = build_button_label(title, data['year'], data['qlabel'], data['lang'])
             safe_label = sanitize_button_text_keep_basic_punct(label)
-            # Keep callback carrying page & index and a plain title (for display)
-            cb = f"get:{data['page']}:{data['index']}:{sanitize_button_text_keep_basic_punct(title)}"
-            buttons.append([Button.inline(safe_label, data=cb.encode('utf-8'))])
+            
+            # --- FIX: Make the callback data smaller (under 64 bytes) ---
+            cb = f"get:{data['page']}:{data['index']}"
+            
+            # Telethon prefers strings for data, it handles the encoding.
+            buttons.append([Button.inline(safe_label, data=cb)])
 
         await status.delete()
         await bot_client.send_message(
@@ -194,14 +197,28 @@ async def discovery_agent(chat_id: int, message_id: int, search_query: str):
 # ---------- Execution (on selection) ----------
 async def execution_agent(event: events.CallbackQuery.Event):
     try:
-        data = (event.data or b"").decode('utf-8', errors='ignore')  # "get:<page>:<index>:<title>"
+        data = (event.data or b"").decode('utf-8', errors='ignore')  # "get:<page>:<index>"
         if not data.startswith("get:"):
             await event.answer()
             return
-        _, page_str, index_str, *title_parts = data.split(':', 3)
+            
+        # --- FIX: Parse the new, shorter callback data format ---
+        _, page_str, index_str = data.split(':', 2)
         target_page = int(page_str)
         target_index = int(index_str)
-        chosen_title = title_parts[0] if title_parts else "your selection"
+
+        # For a nice user message, find the text of the button that was clicked
+        chosen_title = "your selection"
+        reply_message = await event.get_message()
+        if reply_message and reply_message.buttons:
+            for row in reply_message.buttons:
+                for button in row:
+                    if button.data == event.data:
+                        chosen_title = button.text
+                        break
+                if chosen_title != "your selection":
+                    break
+
     except Exception:
         await event.answer("Invalid selection.", alert=True)
         return
